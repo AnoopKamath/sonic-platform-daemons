@@ -5,6 +5,7 @@ from sonic_py_common import device_info, syslogger
 from xcvrd import xcvrd
 
 g_optics_si_dict = {}
+g_optics_si_app_sel_dict = {}
 
 SYSLOG_IDENTIFIER = "xcvrd"
 helper_logger = syslogger.SysLogger(SYSLOG_IDENTIFIER, enable_runtime_config=True)
@@ -84,6 +85,54 @@ def get_optics_si_settings_value(physical_port, lane_speed, key, vendor_name_str
 
     return default_dict
 
+def fetch_optics_app_sel_val(physical_port, lane_speed):
+    if not g_optics_si_app_sel_dict:
+        return
+
+    GLOBAL_MEDIA_SETTINGS_KEY = 'GLOBAL_MEDIA_SETTINGS'
+    SPEED_KEY = str(lane_speed) + 'G_SPEED'
+    APP_SEL_MODE = 'Mode'
+    RANGE_SEPARATOR = '-'
+    COMMA_SEPARATOR = ','
+    optics_si_dict = {}
+    app_sel_val = None
+
+
+    if not xcvrd._wrapper_get_presence(physical_port):
+        helper_logger.log_info("Module {} presence not detected during notify".format(physical_port))
+        return app_sel_val
+    
+    # Keys under global media settings can be a list or range or list of ranges
+    # of physical port numbers. Below are some examples
+    # 1-32
+    # 1,2,3,4,5
+    # 1-4,9-12
+
+    if GLOBAL_MEDIA_SETTINGS_KEY in g_optics_si_app_sel_dict:
+        for keys in g_optics_si_app_sel_dict[GLOBAL_MEDIA_SETTINGS_KEY]:
+            if COMMA_SEPARATOR in keys:
+                port_list = keys.split(COMMA_SEPARATOR)
+                for port in port_list:
+                    if RANGE_SEPARATOR in port:
+                        if xcvrd.check_port_in_range(port, physical_port):
+                            optics_si_dict = g_optics_si_app_sel_dict[GLOBAL_MEDIA_SETTINGS_KEY][keys]
+                            break
+                    elif str(physical_port) == port:
+                        optics_si_dict = g_optics_si_app_sel_dict[GLOBAL_MEDIA_SETTINGS_KEY][keys]
+                        break
+
+            elif RANGE_SEPARATOR in keys:
+                if xcvrd.check_port_in_range(keys, physical_port):
+                    optics_si_dict = g_optics_si_app_sel_dict[GLOBAL_MEDIA_SETTINGS_KEY][keys]
+
+            key_dict = {}
+            if SPEED_KEY in optics_si_dict:
+                key_dict = optics_si_dict[SPEED_KEY]
+            if key_dict:
+                app_sel_val = key_dict[APP_SEL_MODE]
+
+    return app_sel_val
+
 def get_module_vendor_key(physical_port, sfp):
     api = sfp.get_xcvr_api()
     if api is None:
@@ -120,22 +169,48 @@ def fetch_optics_si_setting(physical_port, lane_speed, sfp):
 
 def load_optics_si_settings():
     global g_optics_si_dict
+    global g_optics_si_app_sel_dict
     (platform_path, hwsku_path) = device_info.get_paths_to_platform_and_hwsku_dirs()
 
     # Support to fetch optics_si_settings.json both from platform folder and HWSKU folder
     optics_si_settings_file_path_platform = os.path.join(platform_path, "optics_si_settings.json")
     optics_si_settings_file_path_hwsku = os.path.join(hwsku_path, "optics_si_settings.json")
+    optics_si_app_sel_file_path_platform = os.path.join(platform_path, "optics_si_app_sel.json")
+    optics_si_app_sel_file_path_hwsku = os.path.join(hwsku_path, "optics_si_app_sel.json")
+
+    optics_si_settings_file_path = None
+    optics_si_app_sel_file_path = None
 
     if os.path.isfile(optics_si_settings_file_path_hwsku):
+        helper_logger.log_info("optics SI settings file exists. The optics SI app sel feature will be ignored")
         optics_si_settings_file_path = optics_si_settings_file_path_hwsku
     elif os.path.isfile(optics_si_settings_file_path_platform):
+        helper_logger.log_info("optics SI settings file exists. The optics SI app sel feature will be ignored")
         optics_si_settings_file_path = optics_si_settings_file_path_platform
+    elif os.path.isfile(optics_si_app_sel_file_path_hwsku):
+        helper_logger.log_info("optics SI app sel file exists")
+        optics_si_app_sel_file_path = optics_si_app_sel_file_path_hwsku
+    elif os.path.isfile(optics_si_app_sel_file_path_platform):
+        helper_logger.log_info("optics SI app sel file exists")
+        optics_si_app_sel_file_path = optics_si_app_sel_file_path_platform
     else:
         helper_logger.log_info("No optics SI file exists")
         return {}
 
-    with open(optics_si_settings_file_path, "r") as optics_si_file:
-        g_optics_si_dict = json.load(optics_si_file)
+    # Only read the file if it exists
+    if optics_si_settings_file_path:
+        with open(optics_si_settings_file_path, "r") as optics_si_file:
+            g_optics_si_dict = json.load(optics_si_file)
+
+    if not g_optics_si_dict and optics_si_app_sel_file_path:
+        with open(optics_si_app_sel_file_path, "r") as optics_si_app_sel_file:
+            g_optics_si_app_sel_dict = json.load(optics_si_app_sel_file)
+
+def optics_si_app_sel_present():
+    if not optics_si_present():
+        if g_optics_si_app_sel_dict:
+            return True
+    return False
 
 def optics_si_present():
     if g_optics_si_dict:
