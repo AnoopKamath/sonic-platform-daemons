@@ -130,7 +130,7 @@ def is_cmis_api(api):
    return isinstance(api, CmisApi)
 
 
-def get_cmis_application_desired(api, host_lane_count, speed):
+def get_cmis_application_desired(api, host_lane_count, speed, app_sel_val=None):
     """
     Get the CMIS application code that matches the specified host side configurations
 
@@ -144,6 +144,7 @@ def get_cmis_application_desired(api, host_lane_count, speed):
 
     Returns:
         Integer, the transceiver-specific application code
+	Prioritizes suffix match. Returns fallback if no exact suffix match is found.
     """
 
     if speed == 0 or host_lane_count == 0:
@@ -153,11 +154,32 @@ def get_cmis_application_desired(api, host_lane_count, speed):
         return None
 
     appl_dict = api.get_application_advertisement()
-    for index, app_info in appl_dict.items():
-        if (app_info.get('host_lane_count') == host_lane_count and
-        get_interface_speed(app_info.get('host_electrical_interface_id')) == speed):
-            return (index & 0xf)
+    fallback_index = None
 
+    if app_sel_val is not None:
+        app_sel_prefix = "-L" if app_sel_val == 1 else "-S"
+    else:
+        app_sel_prefix = None
+
+    for index, app_info in appl_dict.items():
+        ifname = app_info.get('host_electrical_interface_id', '')
+        app_speed = get_interface_speed(ifname)
+        lane_count = app_info.get('host_lane_count')
+        if lane_count == host_lane_count and app_speed == speed:
+            # If no app_sel_prefix is provided, return the first match
+            if app_sel_prefix is None:
+                return (index & 0xf)
+            # If app_sel_prefix is provided, check for suffix match
+            if app_sel_prefix in ifname:
+                return (index & 0xf)
+            # If no exact match is found, keep track of the first best match
+            if fallback_index is None:
+                fallback_index = index
+    
+    # If no exact match is found, return the fallback index
+    if fallback_index is not None:
+        return fallback_index & 0xf
+	    
     helper_logger.log_notice(f'No application found from {appl_dict} with host_lane_count={host_lane_count} speed={speed}')
     return None
 
@@ -1148,7 +1170,11 @@ class CmisManagerTask(threading.Thread):
                 try:
                     # CMIS state transitions
                     if state == CMIS_STATE_INSERTED:
-                        self.port_dict[lport]['appl'] = get_cmis_application_desired(api, host_lane_count, host_speed)
+			if optics_si_parser.optics_si_app_sel_present():
+                            port_speed = int(speed/1000)
+                            app_sel_suffix = optics_si_parser.fetch_optics_app_sel_val(pport, port_speed)
+
+                        self.port_dict[lport]['appl'] = get_cmis_application_desired(api, host_lane_count, host_speed, app_sel_suffix)
                         if self.port_dict[lport]['appl'] is None:
                             self.log_error("{}: no suitable app for the port appl {} host_lane_count {} "
                                             "host_speed {}".format(lport, appl, host_lane_count, host_speed))
